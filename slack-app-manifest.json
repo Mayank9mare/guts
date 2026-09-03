@@ -1,7 +1,7 @@
 {
   "display_information": {
     "name": "Guts",
-    "description": "Control Claude Code terminal sessions from your phone via Slack.",
+    "description": "The Black Swordsman, now swinging code. Blunt, dark-humored Claude Code controller for your phone.",
     "background_color": "#1a1a1a"
   },
   "features": {
@@ -13,6 +13,9 @@
       "home_tab_enabled": false,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
+    },
+    "agent_view": {
+      "agent_description": "Guts, the Black Swordsman — DM him or @mention him in a channel to run Claude Code prompts, review and approve PRs, and manage Claude sessions from your phone. No sugarcoating, no corporate fluff."
     }
   },
   "oauth_config": {

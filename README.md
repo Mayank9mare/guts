@@ -193,6 +193,8 @@ Commands can be combined: `!opus !fresh explain this codebase`
 
 **Fast path:** go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest** → pick your workspace → paste the contents of [`slack-app-manifest.json`](slack-app-manifest.json). That sets every scope, event subscription, and App Home setting below in one shot. Rename `display_information.name` / `features.bot_user.display_name` first if you don't want it called "Guts".
 
+Guts is an **AI app / agent** in Slack's terms (it uses the Assistant thread experience for DMs), so the manifest declares `features.agent_view` — that's the only messaging-experience option Slack now offers new apps (the older `assistant_view` is legacy and being phased out). No separate toggle needed beyond what's in the manifest.
+
 Either way, one step the manifest can't do for you: **Socket Mode still needs a manually generated App-Level Token** — go to *Basic Information → App-Level Tokens → Generate Token and Scopes*, add the `connections:write` scope, and save the resulting `xapp-...` token for `SLACK_APP_TOKEN`.
 
 If you'd rather configure by hand instead of using the manifest:
