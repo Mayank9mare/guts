@@ -265,6 +265,9 @@ class SlackFormatter:
                 # Show just domain
                 domain = url.split("/")[2] if url.count("/") >= 2 else url[:30]
                 detail = f" `{domain}`"
+            elif name == "Skill":
+                skill = tool_input.get("skill", "")
+                detail = f" `/{skill}`" if skill else ""
         return f"{name}{detail}"
 
     async def _update_status(self, text: str):

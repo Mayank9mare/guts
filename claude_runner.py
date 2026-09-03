@@ -18,6 +18,12 @@ class ClaudeEvent:
     result: str | None
     is_error: bool
     raw: dict
+    # Populated only on the final "result" event — the CLI's own usage/cost accounting for
+    # this run. None on every other event type.
+    cost_usd: float | None = None
+    duration_ms: int | None = None
+    num_turns: int | None = None
+    usage: dict | None = None
 
 
 def parse_event(line: str) -> ClaudeEvent | None:
@@ -35,6 +41,10 @@ def parse_event(line: str) -> ClaudeEvent | None:
     text = None
     result = None
     is_error = data.get("is_error", False)
+    cost_usd = None
+    duration_ms = None
+    num_turns = None
+    usage = None
 
     if raw_type == "assistant":
         message = data.get("message", {})
@@ -65,6 +75,10 @@ def parse_event(line: str) -> ClaudeEvent | None:
 
     elif raw_type == "result":
         result = data.get("result", "")
+        cost_usd = data.get("total_cost_usd")
+        duration_ms = data.get("duration_ms") or data.get("duration_api_ms")
+        num_turns = data.get("num_turns")
+        usage = data.get("usage")
 
     return ClaudeEvent(
         raw_type=raw_type,
@@ -77,6 +91,10 @@ def parse_event(line: str) -> ClaudeEvent | None:
         result=result,
         is_error=is_error,
         raw=data,
+        cost_usd=cost_usd,
+        duration_ms=duration_ms,
+        num_turns=num_turns,
+        usage=usage,
     )
 
 

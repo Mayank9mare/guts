@@ -31,6 +31,7 @@ import signal
 import subprocess
 import time
 
+import usage_tracker
 from config import (
     CLAUDE_CLI,
     REPOS_BASE_DIR,
@@ -180,11 +181,18 @@ class CrawlManager:
     def _log_base(self, repo: str, stage: str) -> str:
         return os.path.join(CRAWL_LOGS_DIR, f"{repo}-{stage}")
 
-    def _tail_progress(self, log_path: str) -> tuple[int, str, bool]:
-        """Scan a stream-json log: return (tool_call_count, last_progress_line, saw_result_event)."""
+    def _tail_progress(self, log_path: str) -> dict:
+        """Scan a stream-json log: tool-call count/last-progress for the live status line, plus
+        (when present) the final result event's cost/usage/duration for usage tracking, and
+        which tools/skills were invoked — same shape usage_tracker.record_external_run wants."""
         tools = 0
         last = ""
         saw_result = False
+        cost_usd = None
+        duration_ms = None
+        usage = None
+        tools_used: set[str] = set()
+        skills_used: list[str] = []
         try:
             with open(log_path, "r", errors="replace") as f:
                 for line in f:
@@ -198,12 +206,18 @@ class CrawlManager:
                     t = ev.get("type")
                     if t == "result":
                         saw_result = True
+                        cost_usd = ev.get("total_cost_usd")
+                        duration_ms = ev.get("duration_ms") or ev.get("duration_api_ms")
+                        usage = ev.get("usage")
                     if t == "assistant":
                         for b in ev.get("message", {}).get("content", []):
                             if b.get("type") == "tool_use":
                                 tools += 1
                                 name = b.get("name", "")
                                 inp = b.get("input", {})
+                                tools_used.add(name)
+                                if name == "Skill" and inp.get("skill"):
+                                    skills_used.append(inp["skill"])
                                 path = inp.get("file_path") or inp.get("path") or inp.get("pattern") or ""
                                 if path:
                                     last = f"{name} {os.path.basename(str(path))}"
@@ -211,7 +225,23 @@ class CrawlManager:
                                     last = name
         except FileNotFoundError:
             pass
-        return tools, last, saw_result
+        return {
+            "tools": tools, "progress": last, "saw_result": saw_result,
+            "cost_usd": cost_usd, "duration_ms": duration_ms, "usage": usage,
+            "tools_used": sorted(tools_used), "skills_used": skills_used,
+        }
+
+    @staticmethod
+    def _record_usage(state: dict, repo: str, stage: str, p: dict):
+        """Feed a finished worker/supervisor stage's cost into the same usage.jsonl the
+        interactive-chat and !loop paths write — crawl workers are real Opus subprocesses and
+        were previously invisible to !usage / usage_viewer.py entirely."""
+        usage_tracker.record_external_run(
+            thread_ts=state.get("thread_ts", ""), channel=state.get("channel", ""),
+            command=f"crawl:{repo}:{stage}", cost_usd=p["cost_usd"], duration_ms=p["duration_ms"],
+            usage=p["usage"], tools_used=p["tools_used"], skills_used=p["skills_used"],
+            is_error=False, role="admin", model="opus[1m]",
+        )
 
     # --- public commands ---
 
@@ -385,12 +415,14 @@ class CrawlManager:
             return
 
         if status == "worker_running":
-            tools, prog, saw_result = self._tail_progress(self._log_base(repo, "worker") + ".log")
-            s["tools"], s["progress"] = tools, prog
+            p = self._tail_progress(self._log_base(repo, "worker") + ".log")
+            s["tools"], s["progress"] = p["tools"], p["progress"]
             worker_dead = not self._pid_alive(s.get("workerPid"))
-            if saw_result or worker_dead:
+            if p["saw_result"] or worker_dead:
                 # dual-gate handoff: result event OR process death
                 s["status"] = "worker_done"
+                if p["saw_result"]:  # only log usage if the log actually carried cost data
+                    self._record_usage(s, repo, "worker", p)
             self._save(repo)
 
         elif status == "worker_done":
@@ -407,10 +439,12 @@ class CrawlManager:
                 self._save(repo)
 
         elif status == "supervisor_running":
-            tools, prog, saw_result = self._tail_progress(self._log_base(repo, "supervisor") + ".log")
-            s["tools"], s["progress"] = tools, prog
+            p = self._tail_progress(self._log_base(repo, "supervisor") + ".log")
+            s["tools"], s["progress"] = p["tools"], p["progress"]
             sup_dead = not self._pid_alive(s.get("supervisorPid"))
-            if saw_result or sup_dead:
+            if p["saw_result"] or sup_dead:
+                if p["saw_result"]:
+                    self._record_usage(s, repo, "supervisor", p)
                 # stitched iff the staging dir was consumed (supervisor deletes it on success)
                 if not os.path.isdir(s.get("staging", "")):
                     s["status"] = "stitched"

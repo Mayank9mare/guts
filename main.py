@@ -28,6 +28,7 @@ from claude_runner import ClaudeRunner
 from workflows import match_workflow
 from slack_formatter import SlackFormatter
 import profile_manager
+import usage_tracker
 from crawl_manager import crawl_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -78,19 +79,25 @@ async def run_loop_tick(spec: dict) -> str:
     else:
         session_id = spec["session_id"]
 
+    model = spec.get("model") or "sonnet[1m]"
+    tracer = usage_tracker.RunTracer(
+        thread_ts=thread_ts, channel=channel, user_id=spec.get("created_by"), role=role,
+        model=model, command=f"loop:{name}",
+    )
     _active_threads.add(thread_ts)
     try:
         async for ev in runner.run(
             prompt=spec["prompt"],
             session_id=session_id,
             cwd=spec.get("cwd") or DEFAULT_CWD,
-            model=spec.get("model") or "sonnet[1m]",
+            model=model,
             resume=resume,
             allowed_tools=GUEST_ALLOWED_TOOLS if role == "guest" else None,
             disallowed_tools=GUEST_DISALLOWED_TOOLS if role == "guest" else None,
             system_prompt=system_prompt,
         ):
             await formatter.handle_event(ev)
+            tracer.observe(ev)
             if ev.raw_type == "result" and ev.result:
                 final_text = ev.result
             elif ev.raw_type == "assistant" and ev.content_type == "text" and ev.text:
@@ -223,6 +230,10 @@ def _parse_loop_add(arg: str, role: str, channel: str) -> tuple[dict | None, str
 async def run_claude_prompt(prompt: str, opts: dict, thread_ts: str, channel: str, client: AsyncWebClient, say, role: str = "admin", original_msg_ts: str | None = None, user_id: str | None = None):
     """Common logic for running a Claude prompt and streaming results to Slack."""
     logger.info(f"run_claude_prompt called: prompt={prompt[:60]} role={role} thread={thread_ts}")
+
+    # Label for usage tracking, captured before workflow expansion rewrites `prompt` into a
+    # long templated string — "!review", "!kb", etc., or "chat" for a plain natural-language ask.
+    _command_label = prompt.strip().split()[0] if prompt.strip().startswith("!") else "chat"
 
     # Natural-language on-call status — answer from harness state (Claude can't see it).
     # IMPORTANT: match ONLY the current user message, not the prepended thread-history
@@ -462,7 +473,7 @@ async def run_claude_prompt(prompt: str, opts: dict, thread_ts: str, channel: st
         await say(text=msg, thread_ts=thread_ts)
         return
 
-    if prompt == "!huddle" or prompt == "!inbox" or prompt == "!sessions" or prompt == "!leave" or prompt.startswith("!join") or prompt in ("!status", "!kill") or prompt.startswith("!cd ") or prompt.startswith("!fresh") or prompt.startswith("!whitelist") or prompt.startswith("!unwhitelist"):
+    if prompt == "!huddle" or prompt == "!inbox" or prompt == "!sessions" or prompt == "!leave" or prompt.startswith("!join") or prompt in ("!status", "!kill") or prompt.startswith("!cd ") or prompt.startswith("!fresh") or prompt.startswith("!whitelist") or prompt.startswith("!unwhitelist") or prompt == "!usage" or prompt.startswith("!usage "):
         if role != "admin":
             await say(text="_You don't have permission for this command._", thread_ts=thread_ts)
             return
@@ -644,6 +655,35 @@ async def run_claude_prompt(prompt: str, opts: dict, thread_ts: str, channel: st
         await say(text=f"<@{remove_user_id}> has been removed from whitelist.", thread_ts=thread_ts)
         return
 
+    if prompt == "!usage" or prompt.startswith("!usage "):
+        arg = prompt[len("!usage"):].strip().lower()
+        days = {"today": 1, "week": 7, "all": None}.get(arg, 7)
+        label = {"today": "today", "week": "last 7 days", "all": "all time"}.get(arg, "last 7 days")
+        rows = usage_tracker.load_rows(since_days=days)
+        s = usage_tracker.summarize(rows)
+        if not rows:
+            await say(text=f"_No usage recorded yet ({label})._", thread_ts=thread_ts)
+            return
+        lines = [
+            f"*Usage — {label}:*",
+            f"${s['total_cost_usd']:.2f} across {s['total_runs']} run(s), {s['total_tool_calls']} tool calls, {s['error_count']} error(s), avg {s['avg_duration_ms']/1000:.1f}s/run",
+        ]
+        if s["by_command"]:
+            lines.append("\n*By command:*")
+            for cmd, cost in s["by_command"][:8]:
+                lines.append(f"  • `{cmd}` — ${cost:.2f}")
+        if s["by_user"]:
+            lines.append("\n*By user:*")
+            for uid, cost in s["by_user"][:8]:
+                lines.append(f"  • <@{uid}> — ${cost:.2f}" if str(uid).startswith("U") else f"  • {uid} — ${cost:.2f}")
+        if s["top_skills"]:
+            lines.append("\n*Top skills invoked:*")
+            for skill, n in s["top_skills"][:6]:
+                lines.append(f"  • `/{skill}` — {n}x")
+        lines.append("\n`!usage today` / `!usage week` / `!usage all` — change the window. Full dashboard: `python3 usage_viewer.py`")
+        await say(text="\n".join(lines), thread_ts=thread_ts)
+        return
+
     if prompt == "!status":
         all_sessions = sessions.all_sessions()
         if not all_sessions:
@@ -805,6 +845,10 @@ If asked to send a message to a DIFFERENT channel or DM, then use the Slack MCP 
 PROFILE CONTEXT — your private psychological read on the person you're talking to ({profile_name}). Use it to judge how blunt, how detailed, how patient to be — read your opponent before the first swing. NEVER reveal you keep a profile, never quote it back, never psychoanalyze them to their face:
 {_profile}"""
 
+    tracer = usage_tracker.RunTracer(
+        thread_ts=thread_ts, channel=channel, user_id=user_id, role=role,
+        model=session["model"], command=_command_label,
+    )
     _active_threads.add(thread_ts)
     try:
         async for claude_event in runner.run(
@@ -818,6 +862,7 @@ PROFILE CONTEXT — your private psychological read on the person you're talking
             system_prompt=system_prompt,
         ):
             await formatter.handle_event(claude_event)
+            tracer.observe(claude_event)
     except Exception as e:
         logger.exception(f"Error running Claude for thread {thread_ts}")
         await say(text=f"*Error:* `{e}`", thread_ts=thread_ts)
@@ -1155,6 +1200,7 @@ async def main():
 
     os.makedirs(DEFAULT_CWD, exist_ok=True)
     sessions.prune_old()
+    usage_tracker.prune_old_traces()
 
     handler = AsyncSocketModeHandler(app, SLACK_APP_TOKEN)
 

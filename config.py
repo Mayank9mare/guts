@@ -42,6 +42,14 @@ SYSTEM_MAP_DIR = os.path.join(_HERE, "data", "system-map")  # the durable output
 CRAWL_HARD_CEILING_SEC = 4 * 3600   # kill a worker/supervisor past 4h; status -> failed
 CRAWL_POLL_SEC = 30                 # poller tick: tail log, liveness, drive status machine
 
+# Observability — local tracing/usage tracking (usage_tracker.py). Every claude subprocess
+# run through ClaudeRunner (and every finished !crawl stage) gets one span-per-tool-call in
+# TRACES_DIR and one rollup row in USAGE_FILE. Local files only — nothing leaves the machine.
+TRACES_DIR = os.path.join(_HERE, "data", "traces")      # <YYYY-MM-DD>.jsonl, one line per span
+USAGE_FILE = os.path.join(_HERE, "data", "usage.jsonl")  # one line per completed run (cost/tokens/tools)
+TRACE_RETENTION_DAYS = int(os.environ.get("TRACE_RETENTION_DAYS", "30"))  # trace files older
+# than this are deleted on startup; usage.jsonl (the rollup) is kept forever regardless
+
 # Zenduty (for !oncall auto-ack feature)
 ZENDUTY_TOKEN = os.environ.get("ZENDUTY_TOKEN", "")
 ZENDUTY_USER_ID = os.environ.get("ZENDUTY_USER_ID", "")

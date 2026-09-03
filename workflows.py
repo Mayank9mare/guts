@@ -144,6 +144,7 @@ def get_help_text(role: str) -> str:
         lines.append("  `!cd <path> <prompt>` — Set working directory")
         lines.append("  `!status` — List active sessions")
         lines.append("  `!kill` — Terminate session")
+        lines.append("  `!usage [today|week|all]` — Cost/tokens/tool usage summary")
 
     lines.append("")
     lines.append("Or just type a message for a regular Claude prompt.")

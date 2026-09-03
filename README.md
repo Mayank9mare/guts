@@ -55,6 +55,7 @@ Phone sees responses in real time
 - **On-call auto-ack** — optionally acks your Zenduty alerts for a window and reports back when it ends
 - **Self-modifying** (`!evolve`, admin only) — Guts can edit, validate, commit, and restart its own source in response to a plain-English request. Powerful and genuinely risky — see [Security & Privacy](#security--privacy)
 - **Per-person psych profiles** — Guts keeps a private rolling read on everyone it talks to (including guests) to tailor tone; see [Security & Privacy](#security--privacy) before whitelisting anyone
+- **Local usage & trace observability** — every run's cost, tokens, duration, and every tool/skill it invoked is logged locally (`!usage`, or the dashboard at `localhost:8767`) — nothing leaves the machine, and it never slows a response down; see [Observability](#observability)
 - **No public URL** — Socket Mode uses outbound WebSocket only
 
 ## Natural Language Workflows
@@ -165,6 +166,7 @@ Optional — requires `ZENDUTY_TOKEN`, `ZENDUTY_USER_ID`, `ZENDUTY_TEAM_ID` in `
 | `!say @user <message>` | DM someone AS THE BOT (not as you) |
 | `!read-dm @user` | Read the bot's own DM history with someone |
 | `<anything> !raw` (or "send it unredacted") | Lifts credential redaction for that one reply only — the only way to get a real secret value back verbatim. See [Security & Privacy](#security--privacy) |
+| `!usage [today\|week\|all]` | Cost/tokens/tool &amp; skill usage summary — see [Observability](#observability) |
 
 Commands can be combined: `!opus !fresh explain this codebase`
 
@@ -291,7 +293,9 @@ transcribe.py         — Local Whisper transcription for voice-message DMs
 send_as_guts.py       — CLI helper: post a Slack message as the bot, not as your account
 dm_viewer.py          — Local read-only web viewer (localhost:8765) for the bot's own DM history
 persona_viewer.py     — Local read-only web dashboard (localhost:8766) for the psych profiles
-run.sh                — Watchdog: restarts main.py if it dies, also launches persona_viewer.py
+usage_tracker.py      — Local observability: per-run cost/token/tool/skill tracing, background-thread writer
+usage_viewer.py       — Local read-only usage/cost dashboard (localhost:8767), with trace drill-down
+run.sh                — Watchdog: restarts main.py if it dies, also launches persona_viewer.py + usage_viewer.py
 slack-app-manifest.json — Paste into api.slack.com/apps → From a manifest to configure the Slack app in one shot
 sounds/               — Audio files for !huddle
 ```
@@ -315,8 +319,20 @@ Read this before whitelisting anyone as a guest, or running this on a machine wi
 - **Guts keeps a private profile on everyone it talks to**, including guests — `profile_manager.py` rewrites `profiles/<user_id>.md` after every reply with a psychological read (temperament, expertise, what irritates them) used to tailor tone. The persona is explicitly instructed to never reveal or reference this to the person being profiled. If you whitelist someone, consider telling them this happens — there's no opt-out mechanism.
 - **`!raw` lifts credential redaction, deliberately.** Everything Guts sends to Slack is redacted by default (tokens, keys, passwords, connection strings — see `slack_formatter.py`). The admin — and only the admin — can ask for the unredacted value (`!raw`, or plain language like "send the exact key"). Guests and the sibling-bot path can never trigger this, but treat the admin token itself as sensitive: whoever controls `ALLOWED_USER_ID`'s Slack account can extract any secret Guts can read.
 - **`!evolve` lets the bot rewrite its own source and restart itself**, admin-only, no confirmation step beyond the request itself. It does validate (`import`-checks every module before committing) and reverts on failure, but it's still arbitrary code execution against your running deployment triggered from a chat message. Only ever grant admin to yourself.
-- **`dm_viewer.py` and `persona_viewer.py` serve DM history and psych profiles over plain HTTP with no authentication.** Safe as long as they stay bound to `127.0.0.1` (the default) — never port-forward, tunnel (ngrok, `ssh -R`, etc.), or otherwise expose 8765/8766 beyond localhost.
+- **`dm_viewer.py`, `persona_viewer.py`, and `usage_viewer.py` serve DM history, psych profiles, and usage/trace data over plain HTTP with no authentication.** Safe as long as they stay bound to `127.0.0.1` (the default) — never port-forward, tunnel (ngrok, `ssh -R`, etc.), or otherwise expose 8765/8766/8767 beyond localhost.
 - **`bypassPermissions` mode.** The `claude` subprocess always runs with `--permission-mode bypassPermissions` — Claude won't stop to ask before running a tool. The tool *allow/deny* lists are the only gate; there's no per-action confirmation like you'd get in an interactive terminal session.
+
+## Observability
+
+Every `claude` subprocess Guts itself spawns — interactive chat, `!loop` ticks, `!crawl` workers — is traced locally. Nothing leaves the machine, no vendor, no OpenTelemetry collector required, and it's built specifically to never slow a response down.
+
+- **What's captured, per run:** cost (`total_cost_usd`), input/output/cache token counts, duration, every tool call in order (including which `Skill`s were invoked and with what args), and whether it errored — the same data Claude's own `stream-json` output already carries, which was previously parsed once for the live Slack status line and then thrown away.
+- **Two local files, both gitignored:** `data/usage.jsonl` — one rollup row per completed run, cheap to aggregate; `data/traces/<date>.jsonl` — one line per span (tool call / error / result), so any run can be replayed as its full span tree. Trace files older than 30 days are pruned automatically on startup (`TRACE_RETENTION_DAYS` in `.env`); the usage rollup is kept forever.
+- **Off the hot path, on purpose.** `usage_tracker.RunTracer.observe()` never touches disk — it's pure in-memory bookkeeping that hands the row to a background daemon thread over a queue. That thread owns all file I/O, so a slow or full disk can never stall the event loop that's also juggling Slack API calls. Trade-off: a handful of rows still in the queue at the moment of a hard `SIGKILL` (e.g. an `!evolve` restart) are lost — acceptable for observability data.
+- **Redacted before it's written**, not after — Bash command lines and Skill arguments go through the same credential-redaction regex (`slack_formatter._redact`) used for Slack output, before they're queued for disk. Same discipline, same regressions, same known gaps.
+- **Scoped to what Guts spawns**, nothing else. There's no daemon polling other `claude` processes on your machine — `usage_tracker` only ever sees what's explicitly fed to it from `run_claude_prompt`, `run_loop_tick`, and `crawl_manager`'s log-tailing poller.
+- **`!usage [today|week|all]`** — quick cost/token/tool/skill summary without leaving Slack.
+- **`python3 usage_viewer.py`** (`localhost:8767`) — the full dashboard: spend over time, spend by command/user, top tools and skills invoked, a table of recent runs, and click any run to see its full trace (every tool call it made, in order).
 
 ## Limitations
 

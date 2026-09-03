@@ -11,3 +11,6 @@ persona_viewer.log
 .crawl-state/
 .crawl-logs/
 data/system-map/
+data/usage.jsonl
+data/traces/
+usage_viewer.log
