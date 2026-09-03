@@ -2,6 +2,7 @@
 Predefined workflows — shortcuts that expand into full Claude prompts.
 Each workflow maps a command to a prompt template.
 """
+from config import INSTALL_DIR
 
 # role: "admin" = admin only, "guest" = both admin and guest
 WORKFLOWS = {
@@ -91,16 +92,16 @@ Report concisely for Slack/phone: root cause, evidence (key log lines / metric v
         "role": "admin",
         "usage": "!evolve <change in plain English>",
         "description": "Modify Guts's own code — edit, validate, commit, restart (admin only)",
-        "prompt": """You are modifying your OWN source code in ~/claude-slack-controller/. Requested change:
+        "prompt": f"""You are modifying your OWN source code in {INSTALL_DIR}/. Requested change:
 
-{args}
+{{args}}
 
 Follow this EXACT procedure — do not skip steps:
-1. cd ~/claude-slack-controller and read the relevant file(s) to understand current code.
+1. cd {INSTALL_DIR} and read the relevant file(s) to understand current code.
 2. Make the change with Edit/Write.
-3. VALIDATE: run `cd ~/claude-slack-controller && python3 -c "import config, workflows, oncall, claude_runner, slack_formatter, evolve, loop_manager, main"` — all modules must import cleanly.
-4. If validation FAILS: run `cd ~/claude-slack-controller && git checkout .` to discard ALL changes, then report the exact error and STOP. Do NOT restart. The old version keeps running.
-5. If validation PASSES: run `cd ~/claude-slack-controller && git add -A && git commit -m "evolve: <short description>"`.
+3. VALIDATE: run `cd {INSTALL_DIR} && python3 -c "import config, workflows, oncall, claude_runner, slack_formatter, evolve, loop_manager, main"` — all modules must import cleanly.
+4. If validation FAILS: run `cd {INSTALL_DIR} && git checkout .` to discard ALL changes, then report the exact error and STOP. Do NOT restart. The old version keeps running.
+5. If validation PASSES: run `cd {INSTALL_DIR} && git add -A && git commit -m "evolve: <short description>"`.
 6. Tell the user concisely what changed (file + summary), and that you're restarting in 5s to load it.
 7. As the LAST line of your response, output exactly: [GUTS_RESTART]
    The harness sees this marker and schedules a deferred restart AFTER your reply is sent, so you don't kill your own response.

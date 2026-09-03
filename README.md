@@ -50,6 +50,11 @@ Phone sees responses in real time
 - **Tiered access** — admin (full access) and guest (read-only + PR ops)
 - **Auto-intent detection** — just describe what you want, no commands needed
 - **PII redaction** — credentials and sensitive data automatically scrubbed from responses
+- **Background loops** — schedule a recurring prompt, or let Claude iterate on a task until done, independent of your Slack session
+- **Architecture crawl** — point it at any local repo and it builds durable architecture docs (`!crawl`), so future questions get answered from a map instead of a fresh re-read
+- **On-call auto-ack** — optionally acks your Zenduty alerts for a window and reports back when it ends
+- **Self-modifying** (`!evolve`, admin only) — Guts can edit, validate, commit, and restart its own source in response to a plain-English request. Powerful and genuinely risky — see [Security & Privacy](#security--privacy)
+- **Per-person psych profiles** — Guts keeps a private rolling read on everyone it talks to (including guests) to tailor tone; see [Security & Privacy](#security--privacy) before whitelisting anyone
 - **No public URL** — Socket Mode uses outbound WebSocket only
 
 ## Natural Language Workflows
@@ -77,6 +82,9 @@ These also work if you prefer being explicit:
 | `!approve <pr>` | Everyone | Quick review + approve PR |
 | `!fix-pr <pr>` | Admin | Resolve PR comments, push fixes |
 | `!kb <question>` | Everyone | Search work knowledgebase |
+| `!debug <issue>` | Everyone | Investigate an issue — logs/metrics/code → root cause (read-only, invokes a `/troubleshooter` skill if you have one) |
+| `!qa <feature> [scenario]` | Admin | Run E2E QA scenarios (invokes a `/qa` skill if you have one) |
+| `!evolve <change>` | Admin | ⚠️ Guts edits its own source code, validates, commits, and restarts itself. See [Security & Privacy](#security--privacy) |
 | `!help` | Everyone | Show all available commands |
 
 ### Session Management (Admin only)
@@ -89,7 +97,9 @@ These also work if you prefer being explicit:
 | `!fresh <prompt>` | Start a new session (ignore thread history) |
 | `!cd ~/path <prompt>` | Set working directory |
 | `!status` | Show Guts-managed sessions |
-| `!kill` | Terminate current session |
+| `!kill` | Terminate current session (and the session mapping) |
+| `!stop` | Kill the Claude subprocess currently running in this thread, keep the session |
+| `!leave` | Disconnect this thread from a joined external session |
 
 ### External Session Resume
 
@@ -100,6 +110,43 @@ You can interact with Claude sessions running anywhere on your Mac:
 3. Send messages — they resume the external session with full conversation history
 
 **Note:** This uses `claude --resume` which reads the shared conversation history. The external session (IntelliJ/terminal) won't see Guts' messages in real-time, but will pick them up on its next API call. Both sessions share the same conversation log.
+
+### Background Loops (Admin only)
+
+Run a prompt on a schedule, or let Claude iterate on a task until it's done, independent of anything else happening in Slack:
+
+| Command | Action |
+|---|---|
+| `!loop add <name> scheduled <interval> <prompt>` | Re-run `<prompt>` every `<interval>` (min 5m) and post the result each time |
+| `!loop add <name> iterate <max_iters> <prompt>` | Keep re-invoking Claude (Opus) with its own prior output until it emits `[LOOP_DONE]` or `<max_iters>` is hit |
+| `!loop list` | Show all loops and their status |
+| `!loop status <name>` | Detail + last result for one loop |
+| `!loop stop <name>` | Stop a loop |
+
+Capped at 5 concurrent loops, 50 iterations, and a 5-minute minimum scheduled interval — a runaway loop can't silently drain your usage.
+
+### Architecture Crawl (Admin only)
+
+Point Guts at a local repo checkout and it builds durable architecture docs — entry points, call flows, downstream dependencies — via a detached worker→supervisor `claude` pipeline that survives a restart:
+
+| Command | Action |
+|---|---|
+| `!crawl <repo>` | Crawl one repo (a name under `REPOS_BASE_DIR`, or an absolute/`~` path) into `data/system-map/` |
+| `!crawl-all <repo1> <repo2> ...` | Crawl several repos at once |
+| `!crawl-status` | Show status/pid/elapsed for every crawl started so far |
+| `!crawl stitch <repo>` | Re-run just the reconcile step for a repo whose worker already finished |
+
+Once a repo is crawled, ask Guts "how does `<service>` work" and it reads `data/system-map/` instead of re-exploring the whole repo. There's currently no cap on how many crawls `!crawl-all` can kick off at once — each one is a real Opus subprocess, so keep the repo list reasonable.
+
+### On-Call Auto-Ack (Admin only)
+
+Optional — requires `ZENDUTY_TOKEN`, `ZENDUTY_USER_ID`, `ZENDUTY_TEAM_ID` in `.env`:
+
+| Command | Action |
+|---|---|
+| `!oncall <hours>` | Start a window — Guts polls Zenduty and auto-acks incidents assigned to you for `<hours>` |
+| `!oncall status` | Check whether a window is active, and how many alerts it's acked so far |
+| `!oncall off` | End the window early and get the summary report now |
 
 ### User Management (Admin only)
 
@@ -115,6 +162,9 @@ You can interact with Claude sessions running anywhere on your Mac:
 |---|---|
 | `!delete <slack_message_url>` | Delete bot's own message |
 | `!huddle` | Play slack ringtone on Mac speakers |
+| `!say @user <message>` | DM someone AS THE BOT (not as you) |
+| `!read-dm @user` | Read the bot's own DM history with someone |
+| `<anything> !raw` (or "send it unredacted") | Lifts credential redaction for that one reply only — the only way to get a real secret value back verbatim. See [Security & Privacy](#security--privacy) |
 
 Commands can be combined: `!opus !fresh explain this codebase`
 
@@ -122,12 +172,13 @@ Commands can be combined: `!opus !fresh explain this codebase`
 
 | | Admin | Guest | Others |
 |---|---|---|---|
-| Claude prompts | All tools | Read, Glob, Grep, WebSearch, LSP, `gh` CLI | Ignored |
-| PR review/approve | Yes | Yes (via `gh` commands) | — |
+| Claude prompts | All local tools/MCP servers, minus nothing | Read, Glob, Grep, WebSearch, WebFetch, LSP, `gh` CLI — plus any other local MCP tool not explicitly blocked (see [Security & Privacy](#security--privacy)) | Ignored |
+| PR review/approve, `!debug` | Yes | Yes (via `gh` commands) | — |
 | Feature implementation | Yes | No | — |
-| External session resume | Yes | No | — |
+| External session resume, `!loop`, `!crawl*`, `!oncall`, `!evolve`, `!qa` | Yes | No | — |
 | `!opus` model override | Yes | No (Sonnet only) | — |
-| Kill, status, cd | Yes | No | — |
+| Kill, stop, status, cd | Yes | No | — |
+| `!raw` (unredacted output) | Yes | Never, no matter what they ask | — |
 | Working directory | Configurable | Fixed (`GUEST_CWD`) | — |
 
 ## Setup
@@ -163,7 +214,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) and create/configure your
 ### 2. Install Dependencies
 
 ```bash
-cd claude-slack-controller
+cd guts
 pip3 install -r requirements.txt
 ```
 
@@ -221,7 +272,19 @@ slack_formatter.py   — Claude events → Slack messages, reactions, PII redact
 session_manager.py   — Thread-to-session mapping, external session discovery
 workflows.py         — Predefined workflow commands (!review, !approve, etc.)
 config.py            — Environment variables, system prompts, Guts persona, permissions
-sounds/              — Audio files for !huddle
+loop_manager.py       — Background AI loop tasks (!loop): scheduled and iterate-until-done
+crawl_manager.py      — Architecture crawl (!crawl): detached worker→supervisor claude pipeline
+oncall.py             — On-call auto-ack window manager (!oncall)
+zenduty.py            — Minimal Zenduty API client used by oncall.py
+profile_manager.py    — Builds/reads the per-person psych profile injected into every reply
+backfill_personas.py  — One-off script: seed profiles from existing DM history
+evolve.py             — Self-modification support: schedules the deferred restart for !evolve
+transcribe.py         — Local Whisper transcription for voice-message DMs
+send_as_guts.py       — CLI helper: post a Slack message as the bot, not as your account
+dm_viewer.py          — Local read-only web viewer (localhost:8765) for the bot's own DM history
+persona_viewer.py     — Local read-only web dashboard (localhost:8766) for the psych profiles
+run.sh                — Watchdog: restarts main.py if it dies, also launches persona_viewer.py
+sounds/               — Audio files for !huddle
 ```
 
 ### Key Design Decisions
@@ -235,6 +298,17 @@ sounds/              — Audio files for !huddle
 - **PII redaction** — Regex-based scrubbing of tokens, keys, passwords, and connection strings before sending to Slack.
 - **Session persistence** — Thread-to-session mapping saved to `sessions.json`, survives server restarts.
 
+## Security & Privacy
+
+Read this before whitelisting anyone as a guest, or running this on a machine with sensitive local tools configured.
+
+- **Guests inherit your local MCP servers.** `GUEST_ALLOWED_TOOLS` in `config.py` only names the *built-in* Claude tools guests get (Read/Glob/Grep/WebSearch/WebFetch/LSP/`gh`). It does **not** restrict MCP tools — a guest's prompt runs through the same local `claude` CLI config as yours, so any MCP server you have configured (Jira, databases, internal APIs, other Slack workspaces, etc.) is reachable by a guest unless it's explicitly added to `GUEST_DISALLOWED_TOOLS`. Audit your own `~/.claude` MCP config before whitelisting anyone, and add anything sensitive to `GUEST_DISALLOWED_TOOLS`.
+- **Guts keeps a private profile on everyone it talks to**, including guests — `profile_manager.py` rewrites `profiles/<user_id>.md` after every reply with a psychological read (temperament, expertise, what irritates them) used to tailor tone. The persona is explicitly instructed to never reveal or reference this to the person being profiled. If you whitelist someone, consider telling them this happens — there's no opt-out mechanism.
+- **`!raw` lifts credential redaction, deliberately.** Everything Guts sends to Slack is redacted by default (tokens, keys, passwords, connection strings — see `slack_formatter.py`). The admin — and only the admin — can ask for the unredacted value (`!raw`, or plain language like "send the exact key"). Guests and the sibling-bot path can never trigger this, but treat the admin token itself as sensitive: whoever controls `ALLOWED_USER_ID`'s Slack account can extract any secret Guts can read.
+- **`!evolve` lets the bot rewrite its own source and restart itself**, admin-only, no confirmation step beyond the request itself. It does validate (`import`-checks every module before committing) and reverts on failure, but it's still arbitrary code execution against your running deployment triggered from a chat message. Only ever grant admin to yourself.
+- **`dm_viewer.py` and `persona_viewer.py` serve DM history and psych profiles over plain HTTP with no authentication.** Safe as long as they stay bound to `127.0.0.1` (the default) — never port-forward, tunnel (ngrok, `ssh -R`, etc.), or otherwise expose 8765/8766 beyond localhost.
+- **`bypassPermissions` mode.** The `claude` subprocess always runs with `--permission-mode bypassPermissions` — Claude won't stop to ask before running a tool. The tool *allow/deny* lists are the only gate; there's no per-action confirmation like you'd get in an interactive terminal session.
+
 ## Limitations
 
 - Server must be running on your Mac for the bot to respond
@@ -243,3 +317,6 @@ sounds/              — Audio files for !huddle
 - One prompt at a time per thread (queued, not concurrent)
 - External session resume shares conversation history but doesn't inject into running sessions in real-time
 - `gh auth status` may warn about missing `read:org` scope — this is a false alarm, all PR operations work
+- `!crawl-all` has no concurrency cap (unlike `!loop`, which caps at 5) — each repo you give it spawns a real Opus subprocess, so a long repo list means that many running at once
+- `sessions.json` is only pruned of stale entries at startup, not periodically — on a long-running deployment it grows until you restart
+- Restarting (including via `!evolve`) sends the previous process `SIGKILL` immediately, not a graceful `SIGTERM` — an in-flight Slack edit or subprocess can be cut off mid-write
