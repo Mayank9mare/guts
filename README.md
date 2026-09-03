@@ -1,5 +1,7 @@
 # Guts — Claude Code Slack Controller
 
+<img src="assets/guts.png" alt="Guts, the Black Swordsman" width="280">
+
 Control Claude Code terminal sessions from your phone via Slack. Powered by Guts, the Black Swordsman from Berserk — who now swings code instead of the Dragonslayer.
 
 ## How It Works
