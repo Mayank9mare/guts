@@ -209,7 +209,7 @@ function render(s, runs){
 
   const barList = (rows, max) => rows.slice(0,8).map(([label,cost])=>`
       <div class="brow">
-        <div class="nm">${esc(String(label).startsWith('U')?('<@'+label+'>'):label)}</div>
+        <div class="nm">${esc(label)}</div>
         <div class="track"><div class="fill" style="width:${Math.max(2,100*cost/max)}%"></div></div>
         <div class="cost">${money(cost)}</div>
       </div>`).join('');
