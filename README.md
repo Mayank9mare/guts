@@ -191,10 +191,16 @@ Commands can be combined: `!opus !fresh explain this codebase`
 
 ### 1. Slack App Configuration
 
-Go to [api.slack.com/apps](https://api.slack.com/apps) and create/configure your app:
+**Fast path:** go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest** → pick your workspace → paste the contents of [`slack-app-manifest.json`](slack-app-manifest.json). That sets every scope, event subscription, and App Home setting below in one shot. Rename `display_information.name` / `features.bot_user.display_name` first if you don't want it called "Guts".
+
+Either way, one step the manifest can't do for you: **Socket Mode still needs a manually generated App-Level Token** — go to *Basic Information → App-Level Tokens → Generate Token and Scopes*, add the `connections:write` scope, and save the resulting `xapp-...` token for `SLACK_APP_TOKEN`.
+
+If you'd rather configure by hand instead of using the manifest:
 
 **OAuth & Permissions — Bot Token Scopes:**
-- `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`, `reactions:write`, `assistant:write`
+- `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `mpim:history`, `reactions:write`, `assistant:write` — core messaging/session functionality
+- `files:read` — needed to resolve Slack file/permalink links in a message into images the bot can attach to a prompt
+- `users:read` — optional but recommended: without it, profiles and DM viewers fall back to raw Slack IDs instead of display names
 
 **Event Subscriptions — Subscribe to bot events:**
 - `assistant_thread_started`
@@ -284,6 +290,7 @@ send_as_guts.py       — CLI helper: post a Slack message as the bot, not as yo
 dm_viewer.py          — Local read-only web viewer (localhost:8765) for the bot's own DM history
 persona_viewer.py     — Local read-only web dashboard (localhost:8766) for the psych profiles
 run.sh                — Watchdog: restarts main.py if it dies, also launches persona_viewer.py
+slack-app-manifest.json — Paste into api.slack.com/apps → From a manifest to configure the Slack app in one shot
 sounds/               — Audio files for !huddle
 ```
 
