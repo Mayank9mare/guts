@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+sessions.json
+loops.json
+profiles/
+watchdog.log
+guts.pid
+dm_viewer.log
+persona_viewer.log
+.crawl-state/
+.crawl-logs/
+data/system-map/
